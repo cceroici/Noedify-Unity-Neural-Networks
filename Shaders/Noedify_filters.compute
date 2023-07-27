@@ -1,0 +1,198 @@
+﻿
+#pragma kernel BlurFilter
+#pragma kernel NoiseFilter
+#pragma kernel HueFilter
+#pragma kernel EdgeFeatherFilter
+
+RWTexture2D<float4> inImage;
+RWTexture2D<float4> outImage;
+
+int blurWindowSize;
+int textureSize;
+
+[numthreads(8, 8, 1)]
+void BlurFilter(uint3 id : SV_DispatchThreadID)
+{
+    int startx = id.x;
+    int endx = id.x + blurWindowSize;
+    int starty = id.y;
+    int endy = id.y + blurWindowSize;
+
+    if (startx < 0)
+        startx = 0;
+    else if (endx >= textureSize)
+        endx = textureSize - 1;
+    if (starty < 0)
+        starty = 0;
+    else if (endy >= textureSize)
+        endy = textureSize - 1;
+
+    float4 avg = float4(0, 0, 0, 0);
+
+    for (int ix = startx; ix < endx; ix++)
+        for (int iy = starty; iy < endy; iy++) {
+            float4 pixel = inImage[uint2(ix, iy)];
+            avg.x += pixel.x;
+            avg.y += pixel.y;
+            avg.z += pixel.z;
+        }
+
+    startx = id.x;
+    endx = id.x + blurWindowSize/2;
+    starty = id.y;
+    endy = id.y + blurWindowSize/2;
+
+    if (startx < 0)
+        startx = 0;
+    else if (endx >= textureSize)
+        endx = textureSize - 1;
+    if (starty < 0)
+        starty = 0;
+    else if (endy >= textureSize)
+        endy = textureSize - 1;
+
+    for (int ix = startx; ix < endx; ix++)
+        for (int iy = starty; iy < endy; iy++) {
+            float4 pixel = inImage[uint2(ix, iy)];
+            avg.w += pixel.w;
+        }
+        
+
+    avg.x /= (blurWindowSize * blurWindowSize);
+    avg.y /= (blurWindowSize * blurWindowSize);
+    avg.z /= (blurWindowSize * blurWindowSize);
+    avg.w /= (blurWindowSize * blurWindowSize / 4);
+    //avg.w = inImage[id.xy].w;
+
+    outImage[id.xy] = avg;
+    //outImage[id.xy] = inImage[id.xy];
+}
+
+int noiseWindowSize;
+float noiseFilterThreshold;
+[numthreads(8, 8, 1)]
+void NoiseFilter(uint3 id : SV_DispatchThreadID)
+{
+    int startx = id.x;
+    int endx = id.x + noiseWindowSize;
+    int starty = id.y;
+    int endy = id.y + noiseWindowSize;
+
+    if (startx < 0)
+        startx = 0;
+    else if (endx >= textureSize)
+        endx = textureSize - 1;
+    if (starty < 0)
+        starty = 0;
+    else if (endy >= textureSize)
+        endy = textureSize - 1;
+
+    float4 avg = float4(0, 0, 0, 0);
+    avg.w = inImage[id.xy].w;
+    for (int ix = startx; ix < endx; ix++)
+        for (int iy = starty; iy < endy; iy++) {
+            float4 pixel = inImage[uint2(ix, iy)];
+            avg.x += pixel.x;
+            avg.y += pixel.y;
+            avg.z += pixel.z;
+            avg.w += pixel.w;
+        }
+    float4 zeroPixel = float4(0, 0, 0, 0);
+    float threshold = noiseFilterThreshold * noiseWindowSize * noiseWindowSize;
+    if ((avg.w) < threshold)
+        outImage[id.xy] = zeroPixel;
+    else
+        outImage[id.xy] = inImage[id.xy];
+}
+
+
+float HF_r;
+float HF_g;
+float HF_b;
+float HF_a;
+float darkness;
+
+[numthreads(8, 8, 1)]
+void HueFilter(uint3 id : SV_DispatchThreadID)
+{
+
+    float r_in = inImage[id.xy].x;
+    float g_in = inImage[id.xy].y;
+    float b_in = inImage[id.xy].z;
+    float a_in = inImage[id.xy].w;
+
+    if (a_in == 0)
+        return;
+
+    float levelAdjust = 0;
+    if ((r_in + g_in + b_in) / (float)3 > (1 - darkness))
+        levelAdjust = darkness;
+
+    r_in *= HF_r * (1 - levelAdjust);
+    g_in *= HF_g * (1 - levelAdjust);
+    b_in *= HF_b * (1 - levelAdjust);
+    a_in *= HF_a;
+
+    if (r_in > 1)
+        r_in = 1;
+    if (g_in > 1)
+        g_in = 1;
+    if (b_in > 1)
+        b_in = 1;
+    if (a_in > 1)
+        a_in = 1;
+
+    float4 outPixel = float4(r_in, g_in, b_in, a_in);
+
+    outImage[id.xy] = outPixel;
+}
+
+float edgeFeatherDistance;
+float edgeFeatherDropoff;
+
+[numthreads(8, 8, 1)]
+void EdgeFeatherFilter(uint3 id : SV_DispatchThreadID)
+{
+    int edgeDistance = textureSize * edgeFeatherDistance;
+    float featherAmount = 0;
+    int distanceFromEdge = 100;
+    bool feather = false;
+    if (id.x < edgeDistance)
+    {
+        distanceFromEdge = id.x;
+        featherAmount += (1 - (float)distanceFromEdge / (float)edgeDistance) * edgeFeatherDropoff;
+        feather = true;
+    }
+    if (id.x > (textureSize - edgeDistance))
+    {
+        distanceFromEdge = textureSize - id.x;
+        featherAmount += (1 - (float)distanceFromEdge / (float)edgeDistance) * edgeFeatherDropoff;
+        feather = true;
+    }
+    if (id.y < edgeDistance)
+    {
+        distanceFromEdge = id.y;
+        featherAmount += (1 - (float)distanceFromEdge / (float)edgeDistance) * edgeFeatherDropoff;
+        feather = true;
+    }
+    if (id.y > (textureSize - edgeDistance))
+    {
+        distanceFromEdge = textureSize - id.y;
+        featherAmount += (1 - (float)distanceFromEdge / (float)edgeDistance) * edgeFeatherDropoff;
+        feather = true;
+    }
+    if (!feather){
+        outImage[id.xy] = inImage[id.xy];
+        return;
+    }
+
+    if (featherAmount < 0)
+        featherAmount = 0;
+    else if (featherAmount > 1)
+        featherAmount = 1;
+
+    float4 newPixel = inImage[id.xy];
+    newPixel.w *= (1-featherAmount);
+
+    outImage[id.xy] = newPixel;
+}

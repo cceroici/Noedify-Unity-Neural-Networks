@@ -1,0 +1,359 @@
+﻿// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel FC_FP
+#pragma kernel MatMul
+#pragma kernel ApplyBias
+#pragma kernel I2D_Conv2D
+#pragma kernel I2D_Conv3D
+/*
+#pragma kernel I2D_BatchNorm2D_Mean
+#pragma kernel I2D_BatchNorm2D_Std1
+#pragma kernel I2D_BatchNorm2D_Std2
+#pragma kernel I2D_BatchNorm2D
+#pragma kernel I2D_BatchNorm3D
+*/
+#pragma kernel I2D_TranspConv2D
+#pragma kernel I2D_TranspConv3D
+#pragma kernel ApplyAF
+ 
+//RWStructuredBuffer<float> debugFloats;
+
+RWStructuredBuffer<int> activationFunctionList; 
+RWStructuredBuffer<int> layerTypeList;
+RWStructuredBuffer<float> layerSizeList;
+RWStructuredBuffer<float> CNN_nodes_per_filter;
+RWStructuredBuffer<float> CNN_weights_per_filter; 
+RWStructuredBuffer<float> CNN_no_filters;
+RWStructuredBuffer<float> CNN_conns_per_node; 
+RWStructuredBuffer<int> poolingTypeList; 
+RWStructuredBuffer<float> netInputs; 
+RWStructuredBuffer<float> netOutputs; 
+RWStructuredBuffer<float> nodeOutputs; 
+RWStructuredBuffer<float> nodeInputs; 
+
+RWStructuredBuffer<float> weights;
+RWStructuredBuffer<float> biases;
+
+RWStructuredBuffer<int> connectionMask;
+RWStructuredBuffer<int> connectionMaskIdx;
+RWStructuredBuffer<int> connections;
+RWStructuredBuffer<int> connectionsInFilter;
+RWStructuredBuffer<int> filterTrack;
+RWStructuredBuffer<int> nodeTrack;
+
+ 
+int connectionsIdx;
+int weightsIdx;
+int biasIdx;
+int nodeIdx;
+int nodeIdx_prevlyr;
+int activeNodeIdx;
+int activeNodeIdx_prevlyr;
+int layerSize;
+int layerSize_prevlyr;
+int kernelSize_prevlyr;
+
+int total_no_active_nodes;
+int inputSize;
+int layer_no;
+int batch_nodes;
+
+int connPerNode;
+int weightsPerFilter;
+int filterSize;
+int filterSize_prevlyr;
+int channelSize;
+int no_filters_prevlyr;
+
+float eps;
+
+
+[numthreads(1,1,1)]
+void FC_FP(uint3 id : SV_DispatchThreadID)
+{
+    /*
+    int j = id.x;
+
+        nodeInputs[batch_nodes + nodeId[layer_no] + j] = 0;
+        for (int i = 0; i < layerSizeList[layer_no - 1]; i++)
+        {
+            nodeInputs[batch_nodes + nodeId[layer_no] + j] += nodeOutputs[batch_nodes + nodeId[layer_no - 1] + i] * weights[weightsIdx[layer_no - 1] + i * layerSizeList[layer_no] + j];
+        }
+        nodeInputs[batch_nodes + nodeId[layer_no] + j] += biases[biasesIdx[layer_no - 1] + j];
+        netOutputs[j] = netInputs[j];
+        */
+}
+
+RWStructuredBuffer<float> result;
+RWStructuredBuffer<float> matA;
+RWStructuredBuffer<float> matB;
+RWStructuredBuffer<float> offset;
+
+int matA_startIndex;
+int result_startIndex;
+
+int n; // colA, rowB
+int m; // rowA
+int k; // colB
+// output dims: [m,k] [rowA,colB]
+
+[numthreads(16, 1, 1)]
+void MatMul(uint3 id : SV_DispatchThreadID)
+{
+    for (int i = 0; i < m; i++)
+    {
+        result[result_startIndex + i * k + id.x] = 0;
+        for (int q = 0; q < n; q++)
+        {
+            result[result_startIndex + i * k + id.x] += matA[matA_startIndex + i * n + q] * matB[q * k + id.x];
+        }
+        result[result_startIndex + i * k + id.x] += offset[i * k + id.x];
+    }
+}
+
+RWStructuredBuffer<float> apply_bias_param;
+RWStructuredBuffer<float> apply_bias_out;
+
+int apply_bias_param_offset;
+int apply_bias_node_offset;
+int apply_bias_layerSize;
+
+[numthreads(8, 1, 1)]
+void ApplyBias(uint3 id : SV_DispatchThreadID)
+{
+
+    if (id.x < apply_bias_layerSize)
+        apply_bias_out[id.x + apply_bias_node_offset] = apply_bias_param[id.x + apply_bias_param_offset];
+
+
+}
+
+[numthreads(16, 1, 1)]
+void I2D_Conv2D(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x < layerSize) {
+   // if (id.x == 9) {
+        // id.x -> output node
+        for (int conn = 0; conn < connPerNode; conn++)
+        {
+            int node = nodeTrack[activeNodeIdx + id.x];
+            int connected_i = connections[connectionsIdx + node * connPerNode + conn];
+
+            if (connected_i != -1)
+            {
+                int filter_no_prevlyr = filterTrack[activeNodeIdx_prevlyr + id.x];
+                int filter_no = filterTrack[activeNodeIdx + id.x];
+                int cif = connectionsInFilter[connectionsIdx + node * connPerNode + conn];
+                nodeInputs[nodeIdx + id.x] += nodeOutputs[nodeIdx_prevlyr + connected_i] * weights[weightsIdx + filter_no * filterSize * no_filters_prevlyr + cif];
+                //nodeInputs[nodeIdx + id.x] += id.x;
+                //nodeInputs[nodeIdx + id.x] = cif;
+                //debugFloats[id.x * connPerNode + conn] = filter_no;
+            }
+        }
+        //nodeInputs[nodeIdx + id.x] = connections[id.x];
+       // nodeOutputs[nodeIdx + id.x] = connectionsInFilter[id.x];
+    }
+}
+
+
+
+[numthreads(16, 1, 1)]
+void I2D_Conv3D(uint3 id : SV_DispatchThreadID)
+{
+	if (id.x < layerSize) {
+		// if (id.x == 9) {
+		// id.x -> output node
+		for (int conn = 0; conn < connPerNode; conn++)
+		{
+			int node = nodeTrack[activeNodeIdx + id.x];
+			int connected_i = connections[connectionsIdx + node * connPerNode + conn];
+
+			if (connected_i != -1)
+			{
+				int filter_no_prevlyr = filterTrack[activeNodeIdx_prevlyr + id.x];
+				int filter_no = filterTrack[activeNodeIdx + id.x];
+				int cif = connectionsInFilter[connectionsIdx + node * connPerNode + conn];
+				nodeInputs[nodeIdx + id.x] += nodeOutputs[nodeIdx_prevlyr + connected_i] * weights[weightsIdx + filter_no * filterSize * no_filters_prevlyr + cif];
+				//nodeInputs[nodeIdx + id.x] += id.x;
+				//nodeInputs[nodeIdx + id.x] = cif;
+				//debugFloats[id.x * connPerNode + conn] = filter_no;
+			}
+		}
+		//nodeInputs[nodeIdx + id.x] = connections[id.x];
+		// nodeOutputs[nodeIdx + id.x] = connectionsInFilter[id.x];
+	}
+}
+
+
+[numthreads(16, 1, 1)]
+void I2D_TranspConv2D(uint3 id : SV_DispatchThreadID)
+{
+    //int j = TCV2D_offset + id.x;
+
+    // id.x -> output node
+    if (id.x < layerSize) {
+   // if (id.x == 0) {
+
+        for (int conn = 0; conn < connPerNode; conn++)
+        {
+            int nif = nodeTrack[activeNodeIdx + id.x];
+            int connected_nif_i = connections[connectionsIdx + nif * connPerNode + conn];
+
+            if (connected_nif_i != -1)
+            {
+                for (int f_last = 0; f_last < no_filters_prevlyr; f_last++)
+                {
+                    int connected_i = connected_nif_i + kernelSize_prevlyr * f_last;
+                    int f_j = filterTrack[activeNodeIdx + id.x];
+                    int cif = connectionsInFilter[connectionsIdx + nif * connPerNode + conn] + filterSize * f_last;
+                    nodeInputs[nodeIdx + id.x] += nodeOutputs[nodeIdx_prevlyr + connected_i] * weights[weightsIdx + f_j * filterSize * no_filters_prevlyr + cif];
+                    //nodeInputs[nodeIdx + id.x] += nodeOutputs[nodeIdx_prevlyr + connected_i];
+                    //nodeInputs[nodeIdx + connected_j] += nodeOutputs[nodeIdx_prevlyr + i] * weights[weightsIdx + cif];
+                    // nodeInputs[nodeIdx + connected_j] += nodeOutputs[nodeIdx_prevlyr + id.x]; ////////////////////////////////////////////
+
+                    //debugFloats[id.x * connPerNode + conn] = connected_i;
+                }
+            }
+            //debugFloats[i + conn] = i;
+
+        }
+    }
+}
+
+
+[numthreads(16, 1, 1)]
+void I2D_TranspConv3D(uint3 id : SV_DispatchThreadID)
+{
+	//int j = TCV2D_offset + id.x;
+
+	// id.x -> output node
+	if (id.x < layerSize) {
+		// if (id.x == 0) {
+
+		for (int conn = 0; conn < connPerNode; conn++)
+		{
+			int nif = nodeTrack[activeNodeIdx + id.x];
+			int connected_nif_i = connections[connectionsIdx + nif * connPerNode + conn];
+
+			if (connected_nif_i != -1)
+			{
+				for (int f_last = 0; f_last < no_filters_prevlyr; f_last++)
+				{
+					int connected_i = connected_nif_i + kernelSize_prevlyr * f_last;
+					int f_j = filterTrack[activeNodeIdx + id.x];
+					int cif = connectionsInFilter[connectionsIdx + nif * connPerNode + conn] + filterSize * f_last;
+					nodeInputs[nodeIdx + id.x] += nodeOutputs[nodeIdx_prevlyr + connected_i] * weights[weightsIdx + f_j * filterSize * no_filters_prevlyr + cif];
+					//nodeInputs[nodeIdx + id.x] += nodeOutputs[nodeIdx_prevlyr + connected_i];
+					//nodeInputs[nodeIdx + connected_j] += nodeOutputs[nodeIdx_prevlyr + i] * weights[weightsIdx + cif];
+					// nodeInputs[nodeIdx + connected_j] += nodeOutputs[nodeIdx_prevlyr + id.x]; ////////////////////////////////////////////
+
+					//debugFloats[id.x * connPerNode + conn] = connected_i;
+				}
+			}
+			//debugFloats[i + conn] = i;
+
+		}
+	}
+}
+
+//int TCV2D_offset;
+
+/*
+[numthreads(16, 1, 1)]
+void I2D_TranspConv2D_fwd(uint3 id : SV_DispatchThreadID)
+{
+    int i = TCV2D_offset + id.x;
+
+    // id.x -> input node
+    //if (id.x < TCV2D_size) {
+    if (i == 1) {
+
+        int filter_no_prevlyr = filterTrack[activeNodeIdx_prevlyr + i];
+        int nif_prevlyr = nodeTrack[activeNodeIdx_prevlyr + i];
+
+
+        for (int conn = 0; conn < connPerNode; conn++)
+        {
+            int connected_j = connections[connectionsIdx + nif_prevlyr * connPerNode + conn];
+            if (connected_j != -1)
+            {
+
+                int filter_no = filterTrack[activeNodeIdx + connected_j];
+                int cif = connectionsInFilter[connectionsIdx + nif_prevlyr * connPerNode + conn] + filterSize * filter_no_prevlyr;
+                nodeInputs[nodeIdx + connected_j] += nodeOutputs[nodeIdx_prevlyr + i] * weights[weightsIdx + filter_no * filterSize * no_filters_prevlyr + cif];
+                //nodeInputs[nodeIdx + connected_j] += nodeOutputs[nodeIdx_prevlyr + i] * weights[weightsIdx + cif];
+                // nodeInputs[nodeIdx + connected_j] += nodeOutputs[nodeIdx_prevlyr + id.x]; ////////////////////////////////////////////
+
+                //debugFloats[i * connPerNode + conn] = weightsIdx + filter_no * filterSize + cif;
+                //debugFloats[i * connPerNode + conn] = nodeIdx_prevlyr + i;
+            }
+            //debugFloats[i + conn] = i;
+
+        }
+    }
+}
+*/
+int AF_type;
+[numthreads(16, 1, 1)]
+void ApplyAF(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x < layerSize) {
+        if (AF_type == 3) // linear
+        {
+            nodeOutputs[nodeIdx + id.x] = nodeInputs[nodeIdx + id.x];
+        }
+        else if (AF_type == 1) // ReLU
+        {
+            float input = nodeInputs[nodeIdx + id.x];
+            if (input < 0)
+                nodeOutputs[nodeIdx + id.x] = 0.00001f;
+            else
+                nodeOutputs[nodeIdx + id.x] = nodeInputs[nodeIdx + id.x];
+        }
+        else if (AF_type == 7) //  Tanh
+        {
+            //nodeOutputs[nodeIdx + id.x] = 1.0f / (1.0f + exp(-nodeInputs[nodeIdx + id.x]));
+            nodeOutputs[nodeIdx + id.x] = (exp(2.0f * nodeInputs[nodeIdx + id.x]) - 1.0f) / (float)(exp(2.0f * nodeInputs[nodeIdx + id.x]) + 1.0f);
+        }
+    }
+}
+
+
+/*
+// BatchNorm2D
+RWStructuredBuffer<float> batchNorm2D_filterMean;
+RWStructuredBuffer<float> batchNorm2D_filterStd;
+[numthreads(16, 1, 1)]
+void I2D_BatchNorm2D_Mean(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x < 9) {
+        int filter_no = filterTrack[activeNodeIdx + id.x];
+        batchNorm2D_filterMean[filter_no] += nodeOutputs[nodeIdx_prevlyr + id.x] / channelSize;
+    }
+}
+[numthreads(16, 1, 1)]
+void I2D_BatchNorm2D_Std1(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x < layerSize) {
+        int filter_no = filterTrack[activeNodeIdx + id.x];
+        float varTemp = nodeOutputs[nodeIdx_prevlyr + id.x] - batchNorm2D_filterMean[filter_no];
+        batchNorm2D_filterStd[filter_no] += varTemp * varTemp;
+    }
+}
+[numthreads(4, 1, 1)]
+void I2D_BatchNorm2D_Std2(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x < layerSize) {
+        batchNorm2D_filterStd[id.x] = sqrt(batchNorm2D_filterStd[id.x] / channelSize + eps);
+    }
+}
+[numthreads(16, 1, 1)]
+void I2D_BatchNorm2D(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x < layerSize) {
+        int filter_no = filterTrack[activeNodeIdx + id.x];
+        float inputHat = (nodeOutputs[nodeIdx_prevlyr + id.x] - batchNorm2D_filterMean[filter_no]) / batchNorm2D_filterStd[filter_no];
+        nodeInputs[nodeIdx + id.x] = weights[weightsIdx + filter_no] * inputHat;
+    }
+
+}
+*/
